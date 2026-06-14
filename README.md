@@ -1,282 +1,250 @@
+# NILM Appliance Disaggregation using UK-DALE
 
-# UK-DALE High-Frequency NILM Preprocessing and Feature Engineering Pipeline
+## Dataset Selection
 
-## 1. Dataset Selection
+I selected **UK-DALE** because it is one of the most widely used residential NILM datasets and provides both aggregate household power consumption and appliance-level ground truth measurements. House 1 was used because it contains the longest recording period and the largest number of monitored appliances.
 
-### Selected Dataset
-
-**UK-DALE (UK Domestic Appliance-Level Electricity Dataset)**
-
-### Source
-
-https://data.ceda.ac.uk/edc/d1/7d78f943-f9fe-413b-af52-1816f9d968b0/data/version_0
-
-### Rationale
-
-The objective of this project is to develop a preprocessing and feature engineering pipeline for Non-Intrusive Load Monitoring (NILM) using high-resolution electrical measurements. UK-DALE was selected because it provides one of the most comprehensive residential energy datasets available, containing synchronized aggregate mains measurements and appliance-level ground truth recordings.
-
-Unlike conventional NILM datasets that provide only active power readings at low sampling rates, the high-frequency version of UK-DALE includes detailed voltage and current waveform recordings. This enables the extraction of advanced electrical signatures such as harmonic content, waveform distortion metrics, power quality indicators, and voltage-current trajectory characteristics. These signatures are highly informative for distinguishing appliances with similar power consumption patterns but different electrical behaviours.
-
-The dataset is therefore well suited for both traditional feature-based NILM approaches and modern deep learning architectures such as CNNs and LSTMs.
+The dataset has a sampling interval of approximately **6 seconds**, which is sufficient for low-frequency NILM and is commonly used in published Seq2Point NILM research.
 
 ---
 
-## 2. Sampling Frequency Selection
+## Appliances Chosen
 
-### Sampling Rate
+Three appliances were selected from different usage categories:
 
-**16 kHz**
+| Appliance | Reason                               |
+| --------- | ------------------------------------ |
+| Kettle    | High-power, short-duration appliance |
+| Fridge    | Cyclic compressor-based appliance    |
+| Microwave | Medium-power, short burst appliance  |
 
-### Justification
-
-The preprocessing pipeline is designed around the native 16 kHz sampling frequency of the UK-DALE high-frequency recordings.
-
-Residential mains electricity in the UK operates at a fundamental frequency of 50 Hz. A high sampling rate is necessary to accurately capture waveform shape, phase relationships, and harmonic distortion produced by household appliances.
-
-Using 16,000 samples per second provides several advantages:
-
-* Accurate representation of the 50 Hz voltage and current waveforms.
-* Reliable extraction of harmonic components beyond the fundamental frequency.
-* Improved estimation of phase shifts and power factor.
-* Capture of transient appliance behaviour during switching events.
-* Support for detailed V-I trajectory analysis.
-* Sufficient frequency resolution for FFT-based feature extraction.
-
-The selected sampling frequency significantly exceeds the minimum Nyquist requirement, ensuring that important electrical characteristics are preserved during preprocessing.
+This provides a mix of easy, moderate, and difficult disaggregation scenarios.
 
 ---
 
-## 3. Data Cleaning and Preprocessing
+## Preprocessing Pipeline
 
-Before feature extraction, the raw voltage and current signals undergo several preprocessing operations to improve signal quality and ensure consistency across windows.
+### 1. Data Extraction
 
-### Missing Value Handling
+Power readings were extracted from:
 
-Any missing or corrupted samples are replaced using numerical interpolation or zero-substitution depending on the severity of the gap. This prevents invalid values from propagating into downstream feature calculations.
+```text
+Aggregate (Meter 1)
+Kettle (Meter 10)
+Fridge (Meter 12)
+Microwave (Meter 13)
+```
 
-### DC Offset Removal
+using the UK-DALE HDF5 structure.
 
-Measurement hardware often introduces small DC biases into waveform recordings. The mean value of each voltage and current window is removed to ensure the signals are centred around zero.
+### 2. Timestamp Alignment
 
-This step improves FFT quality and prevents artificial low-frequency components from appearing in the spectral representation.
+A major issue encountered was that appliance meters were not perfectly synchronized with the aggregate meter. An initial inner join resulted in an empty dataset because very few timestamps matched exactly across all channels.
 
-### Noise and Outlier Mitigation
+This was resolved by:
 
-Extreme outlier values caused by sensor glitches or acquisition errors are clipped to a physically reasonable range. This prevents individual corrupted samples from disproportionately influencing RMS and harmonic calculations.
+* Using an outer join
+* Sorting timestamps
+* Forward-filling and backward-filling missing values
+* Resampling to a consistent 6-second interval
 
-### Window Segmentation
+### 3. Cleaning
 
-The continuous waveform stream is divided into fixed-length windows.
+The following cleaning steps were applied:
 
-Configuration:
-
-* Sampling Frequency: 16 kHz
-* Window Length: 16,000 samples
-* Window Duration: 1 second
-* Overlap: 50%
-
-Windowing converts the continuous signal into manageable segments suitable for feature extraction and deep learning models.
-
-### Signal Normalization
-
-For machine learning compatibility, cleaned voltage and current waveforms can optionally be standardized using training-set statistics. This improves convergence behaviour during CNN and LSTM training.
-
----
-
-## 4. Feature Engineering
-
-A comprehensive set of electrical, spectral, statistical, and waveform-based features is extracted from every window.
-
-### A. Electrical Features
-
-These features characterize the overall power consumption behaviour of the appliance.
-
-#### Voltage RMS (Vrms)
-
-Measures the effective voltage magnitude.
-
-#### Current RMS (Irms)
-
-Measures the effective current drawn by the load.
-
-#### Active Power (P)
-
-Represents the real electrical power consumed.
-
-#### Apparent Power (S)
-
-Computed as:
-
-S = Vrms × Irms
-
-#### Reactive Power (Q)
-
-Calculated using the power triangle relationship.
-
-#### Power Factor (PF)
-
-Represents the ratio between active and apparent power and provides insight into the phase relationship between voltage and current.
+* Removed negative readings
+* Removed invalid values (NaN, Inf)
+* Filled missing values
+* Standardized all channels onto the same timeline
 
 ---
 
-### B. Harmonic Features
+## Feature Engineering
 
-To capture frequency-domain appliance signatures, a Fast Fourier Transform (FFT) is applied to the current waveform.
+Sliding windows were generated from aggregate power.
 
-The following harmonic magnitudes are extracted:
+For each window, the following features were extracted:
 
-* Fundamental Harmonic (50 Hz)
-* 3rd Harmonic (150 Hz)
-* 5th Harmonic (250 Hz)
-* 7th Harmonic (350 Hz)
-* 9th Harmonic (450 Hz)
-* 11th Harmonic (550 Hz)
-* 13th Harmonic (650 Hz)
+```text
+Mean Power
+Standard Deviation
+Minimum Power
+Maximum Power
+Range
+Energy
+Mean Power Change
+Power Change Standard Deviation
+Maximum Rise
+Maximum Drop
+```
 
-Different appliances exhibit distinct harmonic fingerprints due to their internal electrical characteristics.
+These features capture:
 
----
+* Power magnitude
+* Variability
+* Energy consumption
+* Load transitions
 
-### C. Total Harmonic Distortion (THD)
-
-THD quantifies the amount of harmonic distortion present relative to the fundamental frequency component.
-
-A low THD value typically corresponds to resistive loads, whereas electronic devices with switching power supplies often exhibit higher THD values.
-
----
-
-### D. Spectral Features
-
-Additional frequency-domain descriptors are extracted to characterize energy distribution within the signal.
-
-#### Spectral Centroid
-
-Indicates the centre of mass of the frequency spectrum.
-
-#### Spectral Entropy
-
-Measures the complexity and irregularity of the spectral content.
+which are important characteristics for NILM.
 
 ---
 
-### E. Waveform Shape Features
+## Initial Baseline Model
 
-These features describe the geometric characteristics of the voltage and current waveforms.
+A **Random Forest Regressor** was used as the baseline NILM model.
 
-#### Crest Factor
+Input:
 
-Ratio of peak value to RMS value.
+```text
+Aggregate window features
+```
 
-#### Form Factor
+Output:
 
-Ratio of RMS value to mean absolute value.
+```text
+Predicted appliance power
+```
 
-#### Peak Voltage
-
-Maximum voltage magnitude within the window.
-
-#### Peak Current
-
-Maximum current magnitude within the window.
+The model was trained separately for each appliance.
 
 ---
 
-### F. Statistical Features
+## Challenges Encountered
 
-Statistical descriptors are computed independently for both voltage and current signals.
+### 1. Empty Dataset After Alignment
 
-Features include:
+Initially, all channels were merged using an inner join.
 
-* Mean
-* Standard Deviation
-* Variance
-* Skewness
-* Kurtosis
+Because appliance timestamps were not perfectly aligned, this produced:
 
-These features capture distributional properties and signal shape characteristics.
+```text
+0 rows
+```
 
----
+and no training data.
 
-### G. V-I Trajectory Features
-
-Voltage-current trajectory analysis is widely used in NILM because it captures appliance behaviour independent of absolute power consumption.
-
-Extracted features include:
-
-#### Loop Area
-
-Represents the enclosed area of the V-I trajectory.
-
-#### Voltage Span
-
-Difference between maximum and minimum voltage.
-
-#### Mean Slope
-
-Average slope of the V-I curve.
-
-These features often provide strong appliance discrimination capability.
+Switching to an outer join followed by interpolation and resampling solved this issue.
 
 ---
 
-## 5. Output Generation
+### 2. Severe Class Imbalance
 
-The preprocessing pipeline generates two complementary outputs.
+Most appliances are OFF for the majority of the time.
 
-### Feature Dataset
+For example:
 
-A structured feature table is generated for each processed window and stored in columnar format.
+* Kettle operates for only a few minutes per day.
+* Microwave usage occurs in short bursts.
 
-Contents include:
+As a result, the model sees many more OFF samples than ON samples.
 
-* Electrical Features
-* Harmonic Features
-* Spectral Features
-* Statistical Features
-* V-I Trajectory Features
-* Ground Truth Labels
+This explains why:
 
-This dataset is suitable for classical machine learning algorithms.
+* Fridge achieved strong performance.
+* Kettle achieved reasonable performance.
+* Microwave was the most difficult appliance.
 
 ---
 
-### Waveform Dataset
+### 3. Dataset Size
 
-Cleaned voltage and current windows are stored as tensors with shape:
+The cleaned dataset contained tens of millions of samples.
 
-(N, 2, Window_Size)
-
-where:
-
-* Channel 1 = Voltage
-* Channel 2 = Current
-
-These waveform representations are designed for direct use with CNN and LSTM architectures.
+Generating windows across the entire dataset was computationally expensive, so a representative subset was used for initial experiments.
 
 ---
 
-## 6. Final Feature Set
+## Results
 
-The final feature vector consists of:
+### Kettle
 
-* Vrms
-* Irms
-* Active Power
-* Apparent Power
-* Reactive Power
-* Power Factor
-* Harmonics H1–H13
-* Total Harmonic Distortion
-* Spectral Centroid
-* Spectral Entropy
-* Voltage Crest Factor
-* Current Crest Factor
-* Voltage Form Factor
-* Current Form Factor
-* Voltage Statistics
-* Current Statistics
-* V-I Loop Area
-* V-I Span
-* V-I Mean Slope
+The model successfully identified high-power kettle events.
 
-This combination captures both steady-state and frequency-domain appliance characteristics, providing a rich representation suitable for NILM applications.
+Performance was strong because kettle activations are very distinctive and typically exceed 2000W.
+
+---
+
+### Fridge
+
+The fridge produced the best overall results.
+
+Reasons:
+
+* Frequent cycling behaviour
+* Repeating operating pattern
+* Large number of training examples
+
+This allowed the model to learn fridge behaviour effectively.
+
+---
+
+### Microwave
+
+Microwave performance was lower than kettle and fridge.
+
+Reasons:
+
+* Short activation periods
+* Fewer training examples
+* Greater overlap with other household loads
+
+This makes microwave disaggregation more challenging.
+
+---
+
+## Visual Analysis
+
+Several visualizations were generated:
+
+### Aggregate vs Predicted Appliance Power
+
+Shows how predicted appliance power follows appliance activation events within the aggregate signal.
+
+### Aggregate Reconstruction
+
+The predicted appliance powers were summed and compared against the aggregate signal to evaluate overall reconstruction quality.
+
+### Confusion Matrices
+
+Used to evaluate ON/OFF state detection performance.
+
+### Loss Curves
+
+Used to monitor training convergence.
+
+### Residual Analysis
+
+Used to identify prediction errors and difficult operating regions.
+
+---
+
+## Final Pipeline
+
+```text
+UK-DALE Dataset
+        ↓
+Data Extraction
+        ↓
+Timestamp Alignment
+        ↓
+Cleaning & Resampling
+        ↓
+Feature Engineering
+        ↓
+Random Forest Baseline
+        ↓
+Per-Appliance Evaluation
+        ↓
+Visualization & Error Analysis
+```
+
+## Future Improvements
+
+* CNN Sequence-to-Point (Seq2Point)
+* Longer sliding windows
+* Better handling of class imbalance
+* Window-based temporal learning
+* Iterative subtraction NILM
+* Full-dataset training instead of subsets
+
+The current implementation successfully establishes a complete NILM pipeline, from raw UK-DALE data extraction through preprocessing, feature engineering, appliance disaggregation, and evaluation.
